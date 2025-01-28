@@ -88,6 +88,7 @@
 #define CONFIG_LOOP_END_DELAY delay(8)
 // Configurable code macro to wait USB Serial, but in a non-infinite loop for no-USB plugged boots
 #define CONFIG_SERIAL_BEGIN_DELAY delay(2000)
+#define CONFIG_LEARNING_MAX_LOOP_COUNT 1000
 
 // End of compile-time config section
 
@@ -102,7 +103,11 @@ struct config_struct {
   byte midi_control = 0x15;
 };
 struct config_struct config_live, config_eeprom, config_defaults;
-unsigned int loop_count = 0;
+unsigned int loop_count = 0, loop_last_mode_transition = 0;
+#define MODE_LISTENING 0
+#define MODE_LEARNING 1
+//TODO refactor to use a MODE_SLEEPING but write it in config_live to keep it on power loss/restore
+byte running_mode = MODE_LISTENING;
 
 // Function declarations to keep setup() and loop() definitions first
 void load_EEPROM(bool force_defaults);
@@ -137,7 +142,22 @@ void setup() {
   load_EEPROM(force_defaults);
 }
 
+void set_running_mode(byte mode) {
+  running_mode = mode;
+  loop_last_mode_transition = loop_count;
+  Serial.print("running_mode = ");
+  switch (mode) {
+    case MODE_LISTENING:  Serial.println("MODE_LISTENING"); break;
+    case MODE_LEARNING:   Serial.println("MODE_LEARNING"); break;
+    default:              Serial.println("MODE_UNKNOWN"); break;
+  }
+}
+
 void loop() {
+  // Update running_mode state machine
+  if ( running_mode == MODE_LEARNING && (loop_count - loop_last_mode_transition) > CONFIG_LEARNING_MAX_LOOP_COUNT ) {
+    set_running_mode(MODE_LISTENING);
+  }
   // Process inputs (and set some config_live attributes)
   task_input_MIDI();
   task_input_buttons();
@@ -153,6 +173,7 @@ void loop() {
   loop_count++;
 }
 
+
 // This program will filter out all incoming USB MIDI messages
 //  except "Control Change" for config_live.midi_channel / config_live.midi_control
 // If a MIDI message match, then set config_live.backlight_setpoint with it's values
@@ -164,16 +185,30 @@ void task_input_MIDI() {
     rx = MidiUSB.read();
     // http://www.music.mcgill.ca/~ich/classes/mumt306/StandardMIDIfileformat.html#BMA1_
     if (rx.header == 0x0B /* == control change */) {
-      byte channel = rx.byte1 & 0x0F /* channel number 0-15 is the 4 lower bits */;
-      // Serial.print("Control Change channel: "); Serial.println(channel);
-      if ( channel == config_live.midi_channel ) {
-        byte control = rx.byte2; /* controller number 0-127 */
-        // Serial.print("Control Change control: "); Serial.println(control);
-        if (control == config_live.midi_control ) {
-          byte midi_value = rx.byte3; /* controller new value 0-127 */
-          //Serial.print("Control Change midi_value: "); Serial.println(midi_value);
-          config_live.backlight_setpoint = midi_value << 1 | 1; // Scale up from 0-127 to 1-255
-        }
+      byte channel = rx.byte1 & 0x0F  /* channel number 0-15 is the 4 lower bits */;
+      byte control = rx.byte2;        /* controller number 0-127 */
+      byte midi_value = rx.byte3;     /* controller new value 0-127 */
+      /*
+      Serial.print("Received MIDI Control Change, channel: "); Serial.print(channel);
+      Serial.print(", control: "); Serial.print(control);
+      Serial.print(", midi_value: "); Serial.println(midi_value);
+      */
+      switch (running_mode) {
+        case MODE_LISTENING:
+          // Considering only MIDI Control Change messages that match our current channel/control filter
+          if ( channel == config_live.midi_channel && control == config_live.midi_control ) {
+            // Update the desired backlight value (setpoint)
+            config_live.backlight_setpoint = midi_value << 1 | 1; // Scale up from 0-127 to 1-255
+          }
+        break;
+        case MODE_LEARNING:
+          // Accept any MIDI Control Change message and set our channel/control filter with it's values
+          config_live.midi_channel = channel;
+          config_live.midi_control = control;
+          Serial.print("config_live.midi_channel == 0x"); Serial.println(config_live.midi_channel, HEX);
+          Serial.print("config_live.midi_control == 0x"); Serial.println(config_live.midi_control, HEX);
+          set_running_mode(MODE_LISTENING);
+        break;
       }
     }
   } while (rx.header != 0);
@@ -185,11 +220,7 @@ void screen_btn_1_handler(int prev_state, int last_state) {
     // key press
   } else if ( prev_state == LOW && last_state == HIGH ) {
     // key release
-    config_live.midi_control = (config_live.midi_control+1); /* & 0xFF : type is byte, will wrap */
-    Serial.print("config_live.midi_control == 0x"); Serial.println(config_live.midi_control, HEX);
-    // Send back a Control Change MIDI Message to help user to know on which CC this device is now configured
-    midiEventPacket_t event = {0x0B, 0xB0 | config_live.midi_channel, config_live.midi_control, config_live.backlight_setpoint >> 1};
-    MidiUSB.sendMIDI(event);
+    set_running_mode(MODE_LEARNING);
   } else {
     // key repeat
   }
@@ -201,13 +232,6 @@ void screen_btn_2_handler(int prev_state, int last_state) {
     // key press
   } else if ( prev_state == LOW && last_state == HIGH ) {
     // key release
-    config_live.midi_channel = (config_live.midi_channel+1)  & 0x0F;
-    config_live.midi_control = 0; // TODO is = config_defaults.midi_control better ?
-    Serial.print("config_live.midi_channel == 0x"); Serial.println(config_live.midi_channel, HEX);
-    Serial.print("config_live.midi_control == 0x"); Serial.println(config_live.midi_control, HEX);
-    // Send back a Control Change MIDI Message to help user to know on which CC this device is now configured
-    midiEventPacket_t event = {0x0B, 0xB0 | config_live.midi_channel, config_live.midi_control, config_live.backlight_setpoint >> 1};
-    MidiUSB.sendMIDI(event);
   } else {
     // key repeat
   }
@@ -327,8 +351,17 @@ void task_output_backlight() {
 void task_output_LEDs() {
   int val;
   if ( config_live.backlight_enable ) {
-    // Dimmed but solid on
-    val = CONFIG_SCREEN_POWER_LED_SOLID_LEVEL;
+    switch (running_mode) {
+      case MODE_LISTENING:
+        // Dimmed but solid on
+        val = CONFIG_SCREEN_POWER_LED_SOLID_LEVEL;
+        break;
+      case MODE_LEARNING:
+        // Blinking
+        int blink_loop_counter = (loop_count - loop_last_mode_transition) % 100;
+        val = ( blink_loop_counter < 50 )?CONFIG_SCREEN_POWER_LED_SOLID_LEVEL:1;
+        break;
+    }
   } else {
     // Slow breathing animation
     val = (loop_count%512) >> 3;
