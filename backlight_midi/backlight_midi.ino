@@ -94,18 +94,24 @@
 
 // Global variables, notably the runtime configuration
 struct config_struct {
-  char magic[25]="backlight_midi_config_v1";
+  char magic[25]="backlight_midi_config_v2";
   // If EEPROM is lost or invalid, default to ~10% of backlight luminosity
   int backlight_setpoint = 26;
   bool backlight_enable = true;
-  // Channel 0, control 0x15 is the first rotating button on Novation LaunchKey Mini USB MIDI controller
-  byte midi_channel = 0x00;
-  byte midi_control = 0x15;
+  // command 0x0B (Control Change), channel 0, control 0x15 is the first rotating button on Novation LaunchKey Mini USB MIDI controller
+  byte midi_command_setpoint = 0x0B;
+  byte midi_channel_setpoint = 0x00;
+  byte midi_control_setpoint = 0x15;
+  // command 8 (Note Off), channel 9, control 40 is the first pad
+  byte midi_command_enable = 8;
+  byte midi_channel_enable = 9;
+  byte midi_control_enable = 40;
 };
 struct config_struct config_live, config_eeprom, config_defaults;
 unsigned int loop_count = 0, loop_last_mode_transition = 0;
 #define MODE_LISTENING 0
-#define MODE_LEARNING 1
+#define MODE_LEARNING_SETPOINT 1
+#define MODE_LEARNING_ENABLE 2
 //TODO refactor to use a MODE_SLEEPING but write it in config_live to keep it on power loss/restore
 byte running_mode = MODE_LISTENING;
 
@@ -147,15 +153,17 @@ void set_running_mode(byte mode) {
   loop_last_mode_transition = loop_count;
   Serial.print("running_mode = ");
   switch (mode) {
-    case MODE_LISTENING:  Serial.println("MODE_LISTENING"); break;
-    case MODE_LEARNING:   Serial.println("MODE_LEARNING"); break;
-    default:              Serial.println("MODE_UNKNOWN"); break;
+    case MODE_LISTENING:          Serial.println("MODE_LISTENING"); break;
+    case MODE_LEARNING_SETPOINT:  Serial.println("MODE_LEARNING_SETPOINT"); break;
+    case MODE_LEARNING_ENABLE:    Serial.println("MODE_LEARNING_ENABLE"); break;
+    default:                      Serial.println("MODE_UNKNOWN"); break;
   }
 }
 
 void loop() {
   // Update running_mode state machine
-  if ( running_mode == MODE_LEARNING && (loop_count - loop_last_mode_transition) > CONFIG_LEARNING_MAX_LOOP_COUNT ) {
+  if ( (running_mode == MODE_LEARNING_SETPOINT || running_mode == MODE_LEARNING_ENABLE)
+    && (loop_count - loop_last_mode_transition) > CONFIG_LEARNING_MAX_LOOP_COUNT ) {
     set_running_mode(MODE_LISTENING);
   }
   // Process inputs (and set some config_live attributes)
@@ -175,7 +183,7 @@ void loop() {
 
 
 // This program will filter out all incoming USB MIDI messages
-//  except "Control Change" for config_live.midi_channel / config_live.midi_control
+//  except "Control Change" for config_live.midi_channel_setpoint / config_live.midi_control_setpoint
 // If a MIDI message match, then set config_live.backlight_setpoint with it's values
 void task_input_MIDI() {
   midiEventPacket_t rx;
@@ -184,8 +192,9 @@ void task_input_MIDI() {
     // Pop a pending event from queue (non blocking call, rx.header == 0 if no messages)
     rx = MidiUSB.read();
     // http://www.music.mcgill.ca/~ich/classes/mumt306/StandardMIDIfileformat.html#BMA1_
-    if (rx.header == 0x0B /* == control change */) {
-      byte channel = rx.byte1 & 0x0F  /* channel number 0-15 is the 4 lower bits */;
+    if (rx.header) {
+      byte command = rx.byte1 >> 4;   /* commmand number is higher 4 bits */
+      byte channel = rx.byte1 & 0x0F; /* channel number 0-15 is the 4 lower bits */
       byte control = rx.byte2;        /* controller number 0-127 */
       byte midi_value = rx.byte3;     /* controller new value 0-127 */
       /*
@@ -195,18 +204,39 @@ void task_input_MIDI() {
       */
       switch (running_mode) {
         case MODE_LISTENING:
-          // Considering only MIDI Control Change messages that match our current channel/control filter
-          if ( channel == config_live.midi_channel && control == config_live.midi_control ) {
+          // Considering only MIDI Control Change messages that match our current command/channel/control filters
+          if ( command == config_live.midi_command_setpoint
+            && channel == config_live.midi_channel_setpoint
+            && control == config_live.midi_control_setpoint
+          ) {
             // Update the desired backlight value (setpoint)
             config_live.backlight_setpoint = midi_value << 1 | 1; // Scale up from 0-127 to 1-255
           }
+          if ( command == config_live.midi_command_enable
+            && channel == config_live.midi_channel_enable
+            && control == config_live.midi_control_enable ) {
+            // Cycle between enabled mode or disable mode
+            config_live.backlight_enable = !config_live.backlight_enable;
+          }
         break;
-        case MODE_LEARNING:
-          // Accept any MIDI Control Change message and set our channel/control filter with it's values
-          config_live.midi_channel = channel;
-          config_live.midi_control = control;
-          Serial.print("config_live.midi_channel == 0x"); Serial.println(config_live.midi_channel, HEX);
-          Serial.print("config_live.midi_control == 0x"); Serial.println(config_live.midi_control, HEX);
+        case MODE_LEARNING_SETPOINT:
+          // Accept any MIDI message and set our command/channel/control filter with it's values
+          config_live.midi_command_setpoint = command;
+          config_live.midi_channel_setpoint = channel;
+          config_live.midi_control_setpoint = control;
+          Serial.print("config_live.midi_command_setpoint == 0x"); Serial.println(config_live.midi_command_setpoint, HEX);
+          Serial.print("config_live.midi_channel_setpoint == 0x"); Serial.println(config_live.midi_channel_setpoint, HEX);
+          Serial.print("config_live.midi_control_setpoint == 0x"); Serial.println(config_live.midi_control_setpoint, HEX);
+          set_running_mode(MODE_LISTENING);
+        break;
+        case MODE_LEARNING_ENABLE:
+          // Accept any MIDI message and set our command/channel/control filter with it's values
+          config_live.midi_command_enable = command;
+          config_live.midi_channel_enable = channel;
+          config_live.midi_control_enable = control;
+          Serial.print("config_live.midi_command_enable == 0x"); Serial.println(config_live.midi_command_enable, HEX);
+          Serial.print("config_live.midi_channel_enable == 0x"); Serial.println(config_live.midi_channel_enable, HEX);
+          Serial.print("config_live.midi_control_enable == 0x"); Serial.println(config_live.midi_control_enable, HEX);
           set_running_mode(MODE_LISTENING);
         break;
       }
@@ -215,23 +245,22 @@ void task_input_MIDI() {
 }
 
 void screen_btn_1_handler(int prev_state, int last_state) {
-  if ( !config_live.backlight_enable ) return;
   if ( prev_state == HIGH && last_state == LOW ) {
     // key press
   } else if ( prev_state == LOW && last_state == HIGH ) {
     // key release
-    set_running_mode(MODE_LEARNING);
+    set_running_mode(MODE_LEARNING_SETPOINT);
   } else {
     // key repeat
   }
 }
 
 void screen_btn_2_handler(int prev_state, int last_state) {
-  if ( !config_live.backlight_enable ) return;
   if ( prev_state == HIGH && last_state == LOW ) {
     // key press
   } else if ( prev_state == LOW && last_state == HIGH ) {
     // key release
+    set_running_mode(MODE_LEARNING_ENABLE);
   } else {
     // key repeat
   }
@@ -356,7 +385,7 @@ void task_output_LEDs() {
         // Dimmed but solid on
         val = CONFIG_SCREEN_POWER_LED_SOLID_LEVEL;
         break;
-      case MODE_LEARNING:
+      case MODE_LEARNING_SETPOINT:
         // Blinking
         int blink_loop_counter = (loop_count - loop_last_mode_transition) % 100;
         val = ( blink_loop_counter < 50 )?CONFIG_SCREEN_POWER_LED_SOLID_LEVEL:1;
@@ -415,6 +444,10 @@ void load_EEPROM(bool force_defaults) {
   EEPROM.get(0, config_live);
   Serial.print("config_live.backlight_setpoint == "); Serial.println(config_live.backlight_setpoint);
   Serial.print("config_live.backlight_enable == "); Serial.println(config_live.backlight_enable);
-  Serial.print("config_live.midi_channel == 0x"); Serial.println(config_live.midi_channel, HEX);
-  Serial.print("config_live.midi_control == 0x"); Serial.println(config_live.midi_control, HEX);
+  Serial.print("config_live.midi_command_setpoint == 0x"); Serial.println(config_live.midi_command_setpoint, HEX);
+  Serial.print("config_live.midi_channel_setpoint == 0x"); Serial.println(config_live.midi_channel_setpoint, HEX);
+  Serial.print("config_live.midi_control_setpoint == 0x"); Serial.println(config_live.midi_control_setpoint, HEX);
+  Serial.print("config_live.midi_command_enable == 0x"); Serial.println(config_live.midi_command_enable, HEX);
+  Serial.print("config_live.midi_channel_enable == 0x"); Serial.println(config_live.midi_channel_enable, HEX);
+  Serial.print("config_live.midi_control_enable == 0x"); Serial.println(config_live.midi_control_enable, HEX);
 }
