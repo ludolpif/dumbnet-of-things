@@ -87,7 +87,6 @@
 // Configurable code macro, to keep loop() run fast as useful but power efficient (here 8ms, so below 125Hz)
 #define CONFIG_LOOP_END_DELAY delay(8)
 // Configurable code macro to wait USB Serial, but in a non-infinite loop for no-USB plugged boots
-#define CONFIG_SERIAL_BEGIN_DELAY delay(2000)
 #define CONFIG_LEARNING_MAX_LOOP_COUNT 1000
 
 // End of compile-time config section
@@ -115,18 +114,23 @@ unsigned int loop_count = 0, loop_last_mode_transition = 0;
 //TODO refactor to use a MODE_SLEEPING but write it in config_live to keep it on power loss/restore
 byte running_mode = MODE_LISTENING;
 
+#define SERIAL_COMMAND_NONE 0
+#define SERIAL_COMMAND_DUMP 1
+byte serial_pending_command = SERIAL_COMMAND_NONE;
+
 // Function declarations to keep setup() and loop() definitions first
+void dump_config(struct config_struct *config, char *config_name);
 void load_EEPROM(bool force_defaults);
+void task_input_serial();
 void task_input_MIDI();
 void task_input_buttons();
 void task_output_backlight();
 void task_output_LEDs();
 void task_update_EEPROM();
+void task_output_serial();
 
 void setup() {
   Serial.begin(115200);
-  CONFIG_SERIAL_BEGIN_DELAY;
-  Serial.println("setup()");
 
   pinMode(CONFIG_PIN_LOOP_WATCHDOG, OUTPUT);
   pinMode(CONFIG_PIN_BACKLIGHT_ENA, OUTPUT);
@@ -167,11 +171,13 @@ void loop() {
     set_running_mode(MODE_LISTENING);
   }
   // Process inputs (and set some config_live attributes)
+  task_input_serial();
   task_input_MIDI();
   task_input_buttons();
   // Update output registers (from config_live)
   task_output_backlight();
   task_output_LEDs();
+  task_output_serial();
   // Misc stuff
   task_update_EEPROM();
   // Throttle this processing loop
@@ -181,6 +187,12 @@ void loop() {
   loop_count++;
 }
 
+void task_input_serial() {
+  while ( Serial.available() ) {
+    Serial.read(); // Dump config whatever the provided input
+    serial_pending_command = SERIAL_COMMAND_DUMP;
+  }
+}
 
 // This program will filter out all incoming USB MIDI messages
 //  except "Control Change" for config_live.midi_channel_setpoint / config_live.midi_control_setpoint
@@ -401,6 +413,18 @@ void task_output_LEDs() {
   analogWrite(CONFIG_PIN_POWER_LED, val);
 }
 
+void task_output_serial() {
+  if ( !Serial ) return;
+  switch (serial_pending_command) {
+    case SERIAL_COMMAND_DUMP:
+      dump_config(&config_live, "config_live");
+      break;
+    default:
+      break;
+  }
+  serial_pending_command = SERIAL_COMMAND_NONE;
+}
+
 void task_update_EEPROM() {
   static unsigned long config_last_change_time = 0;
   static unsigned long config_last_write_time = 0;
@@ -431,6 +455,19 @@ void blink_blocking(int pin, int times, int delay_ms, int val) {
   analogWrite(pin, val);
 }
 
+void dump_config(struct config_struct *config, char *config_name) {
+  Serial.println(config_name);
+  Serial.print("magic == "); Serial.println(config->magic);
+  Serial.print("backlight_setpoint == "); Serial.println(config->backlight_setpoint);
+  Serial.print("backlight_enable == "); Serial.println(config->backlight_enable);
+  Serial.print("midi_command_setpoint == 0x"); Serial.println(config->midi_command_setpoint, HEX);
+  Serial.print("midi_channel_setpoint == 0x"); Serial.println(config->midi_channel_setpoint, HEX);
+  Serial.print("midi_control_setpoint == 0x"); Serial.println(config->midi_control_setpoint, HEX);
+  Serial.print("midi_command_enable == 0x"); Serial.println(config->midi_command_enable, HEX);
+  Serial.print("midi_channel_enable == 0x"); Serial.println(config->midi_channel_enable, HEX);
+  Serial.print("midi_control_enable == 0x"); Serial.println(config->midi_control_enable, HEX);
+}
+
 void load_EEPROM(bool force_defaults) {
   // Try to restore config from EEPROM to config_eeprom
   EEPROM.get(0, config_eeprom);
@@ -442,12 +479,6 @@ void load_EEPROM(bool force_defaults) {
   // Load again in config_live this time
   // TODO unlikely garbaged but should have a CRC somehow
   EEPROM.get(0, config_live);
-  Serial.print("config_live.backlight_setpoint == "); Serial.println(config_live.backlight_setpoint);
-  Serial.print("config_live.backlight_enable == "); Serial.println(config_live.backlight_enable);
-  Serial.print("config_live.midi_command_setpoint == 0x"); Serial.println(config_live.midi_command_setpoint, HEX);
-  Serial.print("config_live.midi_channel_setpoint == 0x"); Serial.println(config_live.midi_channel_setpoint, HEX);
-  Serial.print("config_live.midi_control_setpoint == 0x"); Serial.println(config_live.midi_control_setpoint, HEX);
-  Serial.print("config_live.midi_command_enable == 0x"); Serial.println(config_live.midi_command_enable, HEX);
-  Serial.print("config_live.midi_channel_enable == 0x"); Serial.println(config_live.midi_channel_enable, HEX);
-  Serial.print("config_live.midi_control_enable == 0x"); Serial.println(config_live.midi_control_enable, HEX);
+  // Queue a config dump on Serial when it will available
+  serial_pending_command = SERIAL_COMMAND_DUMP;
 }
