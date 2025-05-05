@@ -57,8 +57,17 @@
  *   R=5.0/sqrt(0.15/5.0)
  *   R=29 Ohms (take a not-so-tiny one, for thermal dissipation)
  */
+#if F_CPU != 8000000L
+#error "This design targets 3.3V boards only, you may brick or smoke a 5V based board"
+#endif
+
 #include <EEPROM.h>
 #include "MIDIUSB.h" // Need a native USB System-On-Chip ( AVR ATMEGA16U4 CPU based for example )
+
+#define _TASK_SLEEP_ON_IDLE_RUN  // Enable 1 ms SLEEP_IDLE powerdowns between runs if no callback methods were invoked during the pass
+#define _TASK_TICKLESS           // Make runner.getNextRun() available (and Enable support for tickless sleep on FreeRTOS)
+#define _TASK_DO_NOT_YIELD       // Disable yield() method in execute()
+#include <TaskScheduler.h>
 
 // Begin of compile-time config section
 
@@ -84,8 +93,6 @@
     see atmel-7766-8-bit-avr-atmega16u4-32u4_datasheet.pdf, 14.10.4 Timer/Counter3 Control Register B – TCCR3B
    Note : changing TCCR0B usually affect delay() function, try to find a PWM PIN *not* using Timer 0
 */
-// Configurable code macro, to keep loop() run fast as useful but power efficient (here 8ms, so below 125Hz)
-#define CONFIG_LOOP_END_DELAY delay(8)
 // Configurable code macro to wait USB Serial, but in a non-infinite loop for no-USB plugged boots
 #define CONFIG_LEARNING_MAX_LOOP_COUNT 1000
 
@@ -121,13 +128,26 @@ byte serial_pending_command = SERIAL_COMMAND_NONE;
 // Function declarations to keep setup() and loop() definitions first
 void dump_config(struct config_struct *config, char *config_name);
 void load_EEPROM(bool force_defaults);
-void task_input_serial();
-void task_input_MIDI();
-void task_input_buttons();
-void task_output_backlight();
-void task_output_LEDs();
-void task_update_EEPROM();
-void task_output_serial();
+void input_serial_callback();
+void input_MIDI_callback();
+void input_buttons_callback();
+void output_backlight_callback();
+void output_LEDs_callback();
+void update_EEPROM_callback();
+void output_serial_callback();
+
+// Process inputs (and set some config_live attributes)
+Task task_input_serial(250, TASK_FOREVER, &input_serial_callback);
+Task task_input_MIDI(10, TASK_FOREVER, &input_MIDI_callback);
+Task task_input_buttons(10, TASK_FOREVER, &input_buttons_callback);
+// Update output registers (from config_live)
+Task task_output_backlight(10, TASK_FOREVER, &output_backlight_callback);
+Task task_output_LEDs(10, TASK_FOREVER, &output_LEDs_callback);
+Task task_output_serial(250, TASK_FOREVER, &output_serial_callback);
+// Misc stuff
+Task task_update_EEPROM(250, TASK_FOREVER, &update_EEPROM_callback);
+
+Scheduler runner;
 
 void setup() {
   Serial.begin(115200);
@@ -150,6 +170,22 @@ void setup() {
   // You can keep power button down while booting to force write default config to eeprom
   bool force_defaults = (digitalRead(CONFIG_PIN_SCREEN_BTN_5_POWER) == LOW);
   load_EEPROM(force_defaults);
+
+  runner.init();
+  runner.addTask(task_input_serial);
+  runner.addTask(task_input_MIDI);
+  runner.addTask(task_input_buttons);
+  runner.addTask(task_output_backlight);
+  runner.addTask(task_output_LEDs);
+  runner.addTask(task_update_EEPROM);
+  runner.addTask(task_output_serial);
+  task_input_serial.enable();
+  task_input_MIDI.enable();
+  task_input_buttons.enable();
+  task_output_backlight.enable();
+  task_output_LEDs.enable();
+  task_output_serial.enable();
+  task_update_EEPROM.enable();
 }
 
 void set_running_mode(byte mode) {
@@ -170,24 +206,18 @@ void loop() {
     && (loop_count - loop_last_mode_transition) > CONFIG_LEARNING_MAX_LOOP_COUNT ) {
     set_running_mode(MODE_LISTENING);
   }
-  // Process inputs (and set some config_live attributes)
-  task_input_serial();
-  task_input_MIDI();
-  task_input_buttons();
-  // Update output registers (from config_live)
-  task_output_backlight();
-  task_output_LEDs();
-  task_output_serial();
-  // Misc stuff
-  task_update_EEPROM();
-  // Throttle this processing loop
-  CONFIG_LOOP_END_DELAY;
-  // and trace it on a PIN to check for program health and smoothness with an oscilloscope
+  // Run scheduled tasks
+  runner.execute();
+  unsigned long nr = runner.getNextRun();
+  if ( nr ) delay(nr);
+
+  // Trace loop() frequency on a PIN to check for program health and smoothness with an oscilloscope
   digitalWrite(CONFIG_PIN_LOOP_WATCHDOG, loop_count % 2);
   loop_count++;
 }
 
-void task_input_serial() {
+void input_serial_callback() {
+  // Note : Serial.avaible() is slow on ATmega32U4 (USB CDC), serialEvent is unavailable, don't call this in thight loop
   while ( Serial.available() ) {
     Serial.read(); // Dump config whatever the provided input
     serial_pending_command = SERIAL_COMMAND_DUMP;
@@ -197,7 +227,7 @@ void task_input_serial() {
 // This program will filter out all incoming USB MIDI messages
 //  except "Control Change" for config_live.midi_channel_setpoint / config_live.midi_control_setpoint
 // If a MIDI message match, then set config_live.backlight_setpoint with it's values
-void task_input_MIDI() {
+void input_MIDI_callback() {
   midiEventPacket_t rx;
   // Process all pending MIDI events
   do {
@@ -313,7 +343,7 @@ void screen_btn_5_power_handler(int prev_state, int last_state) {
   }
 }
 
-void task_input_buttons() {
+void input_buttons_callback() {
   // array of function pointers to call event processing procedures
   typedef void(*btn_event_handler_type)(int, int);
   btn_event_handler_type btn_event_handler[CONFIG_SCREEN_BTN_COUNT] = { screen_btn_5_power_handler,
@@ -365,7 +395,7 @@ void task_input_buttons() {
   }
 }
 
-void task_output_backlight() {
+void output_backlight_callback() {
   static int backlight_last_set = 0;
   if ( !config_live.backlight_enable ) {
     analogWrite(CONFIG_PIN_BACKLIGHT_PWM, 0);
@@ -389,7 +419,7 @@ void task_output_backlight() {
   }
 }
 
-void task_output_LEDs() {
+void output_LEDs_callback() {
   int val;
   if ( config_live.backlight_enable ) {
     switch (running_mode) {
@@ -413,7 +443,7 @@ void task_output_LEDs() {
   analogWrite(CONFIG_PIN_POWER_LED, val);
 }
 
-void task_output_serial() {
+void output_serial_callback() {
   if ( !Serial ) return;
   switch (serial_pending_command) {
     case SERIAL_COMMAND_DUMP:
@@ -425,7 +455,7 @@ void task_output_serial() {
   serial_pending_command = SERIAL_COMMAND_NONE;
 }
 
-void task_update_EEPROM() {
+void update_EEPROM_callback() {
   static unsigned long config_last_change_time = 0;
   static unsigned long config_last_write_time = 0;
   unsigned long now = millis();
@@ -456,16 +486,18 @@ void blink_blocking(int pin, int times, int delay_ms, int val) {
 }
 
 void dump_config(struct config_struct *config, char *config_name) {
-  Serial.println(config_name);
-  Serial.print("magic == "); Serial.println(config->magic);
-  Serial.print("backlight_setpoint == "); Serial.println(config->backlight_setpoint);
-  Serial.print("backlight_enable == "); Serial.println(config->backlight_enable);
-  Serial.print("midi_command_setpoint == 0x"); Serial.println(config->midi_command_setpoint, HEX);
-  Serial.print("midi_channel_setpoint == 0x"); Serial.println(config->midi_channel_setpoint, HEX);
-  Serial.print("midi_control_setpoint == 0x"); Serial.println(config->midi_control_setpoint, HEX);
-  Serial.print("midi_command_enable == 0x"); Serial.println(config->midi_command_enable, HEX);
-  Serial.print("midi_channel_enable == 0x"); Serial.println(config->midi_channel_enable, HEX);
-  Serial.print("midi_control_enable == 0x"); Serial.println(config->midi_control_enable, HEX);
+  Serial.println(__FILE__);
+  Serial.print(config_name);
+  Serial.println(":");
+  Serial.print("  magic == "); Serial.println(config->magic);
+  Serial.print("  backlight_setpoint == "); Serial.println(config->backlight_setpoint);
+  Serial.print("  backlight_enable == "); Serial.println(config->backlight_enable);
+  Serial.print("  midi_command_setpoint == 0x"); Serial.println(config->midi_command_setpoint, HEX);
+  Serial.print("  midi_channel_setpoint == 0x"); Serial.println(config->midi_channel_setpoint, HEX);
+  Serial.print("  midi_control_setpoint == 0x"); Serial.println(config->midi_control_setpoint, HEX);
+  Serial.print("  midi_command_enable == 0x"); Serial.println(config->midi_command_enable, HEX);
+  Serial.print("  midi_channel_enable == 0x"); Serial.println(config->midi_channel_enable, HEX);
+  Serial.print("  midi_control_enable == 0x"); Serial.println(config->midi_control_enable, HEX);
 }
 
 void load_EEPROM(bool force_defaults) {
