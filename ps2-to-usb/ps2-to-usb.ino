@@ -37,6 +37,7 @@ enum KeyboardKeycode map_ps2_to_usb_key(uint16_t PS2KeyAdvancedKeyCode);
 
 void setup() {
   Serial.begin(115200);
+  delay(2000); //FIXME Attendre que le Serial soit prêt pour le reporting du clavier, pourrait être asynchrone mais while (!Serial) coute plus de 10ms
 #ifdef I2C_CONTROLLER
   Wire.begin();
   Wire.setWireTimeout(1000,false); // 1ms timeout
@@ -49,7 +50,6 @@ void setup() {
 #ifdef HAS_PS2_KEYBOARD_ATTACHED
   // Configure the PS2 keyboard host emulator library
   ps2kbd.begin(PS2_DATA_PIN, PS2_IRQ_PIN);
-  delay(2000); //FIXME Attendre que le Serial soit prêt pour le reporting du clavier, pourrait être asynchrone
   ps2kbd_detect_keyboard(ps2kbd);
   // set keyboard typematic (auto-repeat pressed keys) to lowest rate as we don't use it
   ps2kbd.typematic(0x1F, 3);
@@ -88,7 +88,6 @@ void task_input_serial() {
 }
 
 void task_output_serial() {
-  if ( !Serial ) return;
   switch (serial_pending_command) {
     case SERIAL_COMMAND_DUMP:
       Serial.println(__FILE__);
