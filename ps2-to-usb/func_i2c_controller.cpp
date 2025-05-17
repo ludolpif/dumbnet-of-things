@@ -40,6 +40,6 @@ uint8_t i2c_query_leds() {
 
 uint8_t i2c_release_all() {
   uint8_t err = 0;
-  uint8_t reply = i2c_command(I2C_PERIPHERIAL_ADDR, I2C_QUERY_LEDS, &err);
+  uint8_t reply = i2c_command(I2C_PERIPHERIAL_ADDR, I2C_RELEASE_ALL, &err);
   return (err==0)?reply:0;
 }

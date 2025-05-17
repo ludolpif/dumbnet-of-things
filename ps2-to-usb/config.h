@@ -6,7 +6,7 @@
 
 /* Configurable constants */
 #define BOARD 1
-#define SERIAL_DEBUG
+//#define SERIAL_DEBUG
 #define PS2_DATA_PIN 4
 #define PS2_IRQ_PIN 7
 #define I2C_PERIPHERIAL_ADDR 2
@@ -48,6 +48,7 @@
 #define I2C_RELEASE_ALL 0xEF
 #define I2C_WARN_SHORT_READ 0xF0
 #define I2C_WARN_TIMEOUT 0xF1
+#define I2C_WARN_OVERRUN 0xF2
 #define I2C_COMMAND_SUCCESS 0xFA
 #define I2C_COMMAND_FAILED 0xFB
 
