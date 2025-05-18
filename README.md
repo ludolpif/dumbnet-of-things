@@ -2,9 +2,16 @@
 
 Here I share my arduino-like programs for automation I use for streaming.
 
+## `1keyboard_2computers`
+
+This program transform an old IBM SK8820 PS2 Keyboard into a dual USB keyboard to control two computers.
+I plan to use it in a streaming setup (a streaming laptop and a dekstop computer to show things on stream).
+
+I've put 2 Sparkfun Pro Micro inside the original keyboard case, wiring is detailled in `config.h`.
+
 ## `backlight_midi`
 
-This program transform old Dell P1917S screens into cheap USBMIDI remote controllable light panels.
+This program transform an old Dell P1917S screens into cheap USBMIDI remote controllable light panels.
 
 You need to disassemble the screen, remove it's motherboard and LCD screen, keep USB dauther board.
 
