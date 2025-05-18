@@ -6,7 +6,7 @@ Here I share my arduino-like programs for automation I use for streaming.
 
 This program transforms an old IBM SK8820 PS2 Keyboard into a dual USB keyboard to control two computers.
 
-I've put 2 Sparkfun Pro Micro inside the original keyboard case, wiring is detailled in `config.h`.
+I've put 2 Sparkfun Pro Micro 5V 16Mhz inside the original keyboard case, wiring is detailled in `config.h`.
 
 ## `backlight_midi`
 
