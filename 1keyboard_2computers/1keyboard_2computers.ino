@@ -1,3 +1,19 @@
+/*
+ *  Copyright (c) 2025 ludolpif <ludolpif@gmail.com>
+ *  This file is part of 1keyboard_2computers.
+ *
+ *  1keyboard_2computers is free software: you can redistribute it and/or modify it under the terms of
+ *  the GNU General Public License as published by the Free Software Foundation,
+ *  either version 3 of the License, or (at your option) any later version.
+ *
+ *  1keyboard_2computers is distributed in the hope that it will be useful, but WITHOUT ANY
+ *  WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ *  FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ *  more details.
+ *
+ *  You should have received a copy of the GNU General Public License along with
+ *  1keyboard_2computers. If not, see <https://www.gnu.org/licenses/>
+ */
 #include <PS2KeyAdvanced.h>
 #include <HID-Project.h>
 #include <Wire.h>
@@ -6,7 +22,6 @@
 /* Global variables */
 uint8_t serial_pending_command = SERIAL_COMMAND_NONE;
 uint8_t leds;
-
 #ifdef HAS_PS2_KEYBOARD_ATTACHED
 PS2KeyAdvanced ps2kbd;
 uint8_t ps2kbd_status = PS2KBD_UNKNOWN;
@@ -18,7 +33,6 @@ bool send_remotely;
 uint16_t last_keycode_or_command = 0;
 uint8_t last_command_reply = 0;
 #endif
-
 
 /* Global helpers functions to keep this .ino file "small" */
 // from func_i2c_controller.cpp
@@ -39,7 +53,8 @@ enum KeyboardKeycode map_ps2_to_usb_key(uint16_t PS2KeyAdvancedKeyCode);
 void setup() {
   // Configure the USB keyboard emulator library
   BootKeyboard.begin();
-  Serial.begin(0); //USB Serial, no baudrate
+  // USB Serial, no baudrate
+  Serial.begin(0);
 #ifdef I2C_CONTROLLER
   Wire.begin();
   Wire.setWireTimeout(1000,false); // 1ms timeout
