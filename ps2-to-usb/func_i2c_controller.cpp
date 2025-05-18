@@ -16,6 +16,7 @@ uint8_t i2c_command(uint8_t addr, uint16_t command, uint8_t *err) {
     if (err) *err = res;
     return 0;
   }
+  delay(1); // FIXME find a better way to wait remote command processing completion
   Wire.requestFrom(addr, (uint8_t)1);  // request 1 byte from peripheral device #addr
   if (Wire.available()) {     // peripheral may send less than requested
     reply = Wire.read();

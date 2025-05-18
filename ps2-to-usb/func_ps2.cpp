@@ -1,21 +1,27 @@
 #include "config.h"
 #include <PS2KeyAdvanced.h>
 
-void ps2kbd_detect_keyboard(PS2KeyAdvanced ps2kbd) {
-  ps2kbd.echo( );              // ping keyboard to see if there
-  delay( 6 );
-  uint16_t ps2keycode = ps2kbd.read( );
+uint8_t ps2kbd_detect_keyboard(PS2KeyAdvanced ps2kbd) {
+  ps2kbd.echo(); // ping keyboard to see if there
+  delay(6);
+  uint16_t ps2keycode = ps2kbd.read();
+
+  if( (ps2keycode & 0xFF) == 0 ) {
+    // Maybe we are in a cold boot, and keyboard is booting, PS2 spec allow 400ms for that
+    delay(400);
+    ps2kbd.echo();
+    delay(6);
+    ps2keycode = ps2kbd.read( );
+  }
+
   // BAT is a PS2 protocol keycode to signal that Keyboard self-autotest result is PASSED.
   if( (ps2keycode & 0xFF) == PS2_KEY_ECHO || (ps2keycode & 0xFF) == PS2_KEY_BAT ) {
-    Serial.println( "PS2 keyboard OK.." );
-  } else {
-    if( ( ps2keycode & 0xFF ) == 0 ) {
-      Serial.println( "PS2 keyboard Not Found" );
-    } else {
-      Serial.print( "Invalid Code received: 0x" );
-      Serial.println( ps2keycode, HEX );
-    }
+    return PS2KBD_ALIVE;
   }
+  if( (ps2keycode & 0xFF) == 0 ) {
+    return PS2KBD_NOT_FOUND;
+  }
+  return PS2KBD_FAULTY;
 }
 
 /*

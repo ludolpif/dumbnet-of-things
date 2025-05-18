@@ -10,6 +10,10 @@
 #define PS2_DATA_PIN 4
 #define PS2_IRQ_PIN 7
 #define I2C_PERIPHERIAL_ADDR 2
+#define PIN_NOTIFY 9
+
+#define NOTIFY_NONE HIGH
+#define NOTIFY_PENDING LOW
 
 /* Notes:
  * PS2 Keyboard is connected on BOARD 1
@@ -55,3 +59,9 @@
 /* Constants for Serial port command queuing */
 #define SERIAL_COMMAND_NONE 0
 #define SERIAL_COMMAND_DUMP 1
+
+/* Constants for PS2 Keyboard status */
+#define PS2KBD_UNKNOWN 0
+#define PS2KBD_ALIVE 1
+#define PS2KBD_NOT_FOUND 2
+#define PS2KBD_FAULTY 3

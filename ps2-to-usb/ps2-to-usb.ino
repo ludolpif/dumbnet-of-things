@@ -4,11 +4,12 @@
 #include "config.h"
 
 /* Global variables */
-uint8_t serial_pending_command = SERIAL_COMMAND_DUMP;
+uint8_t serial_pending_command = SERIAL_COMMAND_NONE;
 uint8_t leds;
 
 #ifdef HAS_PS2_KEYBOARD_ATTACHED
 PS2KeyAdvanced ps2kbd;
+uint8_t ps2kbd_status = PS2KBD_UNKNOWN;
 #endif
 #if BOARD == 1
 bool send_remotely;
@@ -27,7 +28,7 @@ uint8_t i2c_release_all();
 // from func_i2c_peripherial.cpp
 uint16_t i2c_recv_word(uint8_t addr, uint8_t *readlen);
 // from func_ps2.cpp
-void ps2kbd_detect_keyboard(PS2KeyAdvanced ps2kbd);
+uint8_t ps2kbd_detect_keyboard(PS2KeyAdvanced ps2kbd);
 void ps2key_trace(uint16_t ps2keycode);
 // from func_usb.cpp
 void usbkey_trace( enum KeyboardKeycode usbkeycode);
@@ -36,30 +37,30 @@ int usb_release_all();
 enum KeyboardKeycode map_ps2_to_usb_key(uint16_t PS2KeyAdvancedKeyCode);
 
 void setup() {
-  Serial.begin(115200);
-  delay(2000); //FIXME Attendre que le Serial soit prêt pour le reporting du clavier, pourrait être asynchrone mais while (!Serial) coute plus de 10ms
+  // Configure the USB keyboard emulator library
+  BootKeyboard.begin();
+  Serial.begin(0); //USB Serial, no baudrate
 #ifdef I2C_CONTROLLER
   Wire.begin();
   Wire.setWireTimeout(1000,false); // 1ms timeout
+  pinMode(PIN_NOTIFY, INPUT_PULLUP); // Pull Up to let this other BOARD reboot without driving this line (no garbage reading)
 #endif
 #ifdef I2C_PERIPHERIAL
   Wire.begin(I2C_PERIPHERIAL_ADDR);
   Wire.onReceive(i2c_on_receive_keycode_or_command);
   Wire.onRequest(i2c_on_request_command_reply);
+  digitalWrite(PIN_NOTIFY, NOTIFY_NONE);
+  pinMode(PIN_NOTIFY, OUTPUT);
 #endif
 #ifdef HAS_PS2_KEYBOARD_ATTACHED
   // Configure the PS2 keyboard host emulator library
   ps2kbd.begin(PS2_DATA_PIN, PS2_IRQ_PIN);
-  ps2kbd_detect_keyboard(ps2kbd);
+  ps2kbd_status = ps2kbd_detect_keyboard(ps2kbd);
   // set keyboard typematic (auto-repeat pressed keys) to lowest rate as we don't use it
   ps2kbd.typematic(0x1F, 3);
   // and set no repeat on CTRL, ALT, SHIFT, GUI while outputting
   ps2kbd.setNoRepeat(1);
-  // By default light up Scroll Lock (indicating non-standard keyboard), and send keys at the other arduino
-  ps2kbd.setLock(PS2_LOCK_SCROLL);
 #endif
-  // Configure the USB keyboard emulator library
-  BootKeyboard.begin();
 #if BOARD == 1
   switch_keyboard(true);
 #endif
@@ -68,19 +69,19 @@ void setup() {
 #if BOARD == 1
 void loop() {
   task_input_ps2kbd();
-  // task_input_serial(); FIXME too slow
+  task_input_serial();
   task_output_serial();
-  task_update_local_host_leds();
+  task_update_leds();
   delay(1); // Poor's man powersaving
 }
 #endif /*# BOARD == 1 */
 
 #if BOARD == 2
 void loop() {
-  // task_input_serial(); FIXME too slow
+  task_input_serial();
   task_output_serial();
   task_process_last_keycode_or_command();
-  task_update_local_host_leds();
+  task_check_leds();
   delay(1); // Poor's man powersaving
 }
 #endif /*# BOARD == 2 */
@@ -100,6 +101,15 @@ void task_output_serial() {
 #ifdef SERIAL_DEBUG
       Serial.println("SERIAL_DEBUG is defined");
 #endif
+#ifdef HAS_PS2_KEYBOARD_ATTACHED
+      Serial.print("ps2kbd_status: ");
+      switch (ps2kbd_status) {
+        case PS2KBD_UNKNOWN: Serial.println("PS2KBD_UNKNOWN"); break;
+        case PS2KBD_ALIVE: Serial.println("PS2KBD_ALIVE"); break;
+        case PS2KBD_NOT_FOUND: Serial.println("PS2KBD_NOT_FOUND"); break;
+        case PS2KBD_FAULTY: Serial.println("PS2KBD_FAULTY"); break;
+      }
+#endif
       break;
     default:
       break;
@@ -107,22 +117,6 @@ void task_output_serial() {
   serial_pending_command = SERIAL_COMMAND_NONE;
 }
 
-// not much common between boards
-#if BOARD == 1
-void task_update_local_host_leds() {
-  uint8_t new_leds;
-  if ( send_remotely ) return;
-  new_leds = usb_query_leds();
-  if ( new_leds != leds ) {
-    leds = new_leds;
-    ps2kbd.setLock(leds & 0x07);
-  }
-}
-#else
-void task_update_local_host_leds() {
-    // FIXME no notification mechanism yet in I2C protocol
-}
-#endif
 void emulate_usb(uint16_t ps2keycode) {
   enum KeyboardKeycode usbkeycode;
   usbkeycode = map_ps2_to_usb_key(ps2keycode);
@@ -134,30 +128,10 @@ void emulate_usb(uint16_t ps2keycode) {
 
   if ( !usbkeycode ) return;
 
-  // TODO rewrite condition with usbkeycode
   switch ( (ps2keycode & 0xFF) ) {
-    case PS2_KEY_NUM:
-      BootKeyboard.write(usbkeycode);
-      /* TODO get usb lock status and PS2 to always check if is it in sync ?
-      if ( ps2kbd.getLock() & PS2_LOCK_NUM ) {
-        Serial.println("PS_LOCK_NUM set");
-      } else {
-        Serial.println("PS_LOCK_NUM unset");
-      }
-      */
-      break;
-    case PS2_KEY_CAPS:
-      BootKeyboard.write(usbkeycode);
-      /* TODO get usb lock status and PS2 to always check if is it in sync ?
-      if ( ps2kbd.getLock() & PS2_LOCK_NUM ) {
-        Serial.println("PS_LOCK_CAPS set");
-      } else {
-        Serial.println("PS_LOCK_CAPS unset");
-      }
-      */
-      break;
-    case PS2_KEY_PAUSE:
-      // PS2 keyboard don't send break code for Pause key when the key is released
+    case PS2_KEY_NUM:   // Case where the PS2 lib returns only a single event
+    case PS2_KEY_CAPS:  // Case where the PS2 lib returns only a single event
+    case PS2_KEY_PAUSE: // PS2 keyboard don't send break code for Pause key when the key is released
       BootKeyboard.write(usbkeycode);
       break;
     //TODO PS2 lib dont send make code for Ctrl+Pause (Break) key, only break code
@@ -225,6 +199,29 @@ void task_input_ps2kbd() {
     }
   }
 }
+
+void task_update_leds() {
+  uint8_t new_leds = leds;
+  if ( send_remotely && digitalRead(PIN_NOTIFY) == NOTIFY_PENDING ) {
+      new_leds = i2c_query_leds();
+#ifdef SERIAL_DEBUG
+      Serial.print("task_update_leds, remotely, NOTIFY_PENDING, new_leds: 0x");
+      Serial.println(new_leds, HEX);
+#endif
+  }
+  if ( !send_remotely ) {
+    new_leds = usb_query_leds();
+  }
+  if ( new_leds != leds ) {
+    leds = new_leds;
+    if ( send_remotely ) {
+      // "& 0x07" to not fall in a known bug : https://github.com/techpaul/PS2KeyAdvanced/issues/39
+      ps2kbd.setLock(leds & 0x07 | PS2_LOCK_SCROLL);
+    } else {
+      ps2kbd.setLock(leds & 0x07 & ~PS2_LOCK_SCROLL);
+    }
+  }
+}
 #endif /*# BOARD == 1 */
 
 #if BOARD == 2
@@ -265,16 +262,33 @@ void task_process_last_keycode_or_command() {
     case I2C_QUERY_LEDS:
       BootKeyboard.wakeupHost(); //TODO useful ?
       last_command_reply = usb_query_leds();
+      digitalWrite(PIN_NOTIFY, NOTIFY_NONE);
+#ifdef SERIAL_DEBUG
       Serial.print("I2C query LEDS returns 0x");
       Serial.println(last_command_reply, HEX);
+#endif
       break;
     case I2C_RELEASE_ALL:
       last_command_reply = usb_release_all()?I2C_COMMAND_SUCCESS:I2C_COMMAND_FAILED;
+#ifdef SERIAL_DEBUG
       Serial.print("I2C release all returns 0x");
       Serial.println(last_command_reply, HEX);
+#endif
       break;
     default:
       emulate_usb(ps2keycode_or_command);
   }
 }
+
+void task_check_leds() {
+    uint8_t new_leds = usb_query_leds();
+    if ( new_leds != leds ) {
+      leds = new_leds;
+#ifdef SERIAL_DEBUG
+      Serial.println("digitalWrite(PIN_NOTIFY, NOTIFY_PENDING);");
+#endif
+      digitalWrite(PIN_NOTIFY, NOTIFY_PENDING);
+    }
+}
+
 #endif /*# BOARD == 2 */
