@@ -73,11 +73,13 @@ void setup() {
   ps2kbd_status = ps2kbd_detect_keyboard(ps2kbd);
   // set keyboard typematic (auto-repeat pressed keys) to lowest rate as we don't use it
   ps2kbd.typematic(0x1F, 3);
-  // and set no repeat on CTRL, ALT, SHIFT, GUI while outputting
+  // and set no repeat on CTRL, ALT, SHIFT, GUI keys
   ps2kbd.setNoRepeat(1);
+  // and manually set LED status
+  ps2kbd.setNoLedLockUpdates(1);
 #endif
 #if BOARD == 1
-  switch_keyboard(true);
+  delay(300); switch_keyboard(true);
 #endif
 }
 
@@ -167,13 +169,11 @@ void switch_keyboard(bool remotely) {
         leds = i2c_query_leds();
         // "& 0x07" to not fall in a known bug : https://github.com/techpaul/PS2KeyAdvanced/issues/39
         ps2kbd.setLock(leds & 0x07 | PS2_LOCK_SCROLL);
-        send_remotely = true;
       } else {
         i2c_release_all();
         BootKeyboard.wakeupHost(); //TODO useful ?
         leds = usb_query_leds();
         ps2kbd.setLock(leds & 0x07 & ~PS2_LOCK_SCROLL);
-        send_remotely = false;
       }
       send_remotely = remotely;
 }
